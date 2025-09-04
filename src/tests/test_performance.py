@@ -132,8 +132,6 @@ class TestDataPipelinePerformance:
         
         timer.metrics.print_summary()
         assert timer.metrics.throughput > 100  # Should process >100 events/second
-        
-        return timer.metrics
     
     def test_pipeline_throughput_large(self):
         """Test pipeline throughput with large dataset"""
@@ -162,8 +160,6 @@ class TestDataPipelinePerformance:
         timer.metrics.calculate()  # Recalculate with actual count
         timer.metrics.print_summary()
         assert timer.metrics.throughput > 500  # Should process >500 events/second
-        
-        return timer.metrics
     
     @pytest.mark.asyncio
     async def test_async_pipeline_performance(self):
@@ -193,8 +189,6 @@ class TestDataPipelinePerformance:
         timer.metrics.calculate()
         timer.metrics.print_summary()
         assert timer.metrics.throughput > 1000  # Async should be faster
-        
-        return timer.metrics
 
 
 class TestContextManagerPerformance:
@@ -213,8 +207,6 @@ class TestContextManagerPerformance:
         timer.metrics.print_summary()
         avg_time = timer.metrics.duration / timer.metrics.operations
         assert avg_time < 0.01  # Should be <10ms per acquisition
-        
-        return timer.metrics
     
     def test_nested_context_performance(self):
         """Test performance of nested contexts"""
@@ -234,8 +226,6 @@ class TestContextManagerPerformance:
         
         timer.metrics.print_summary()
         assert timer.metrics.duration < 0.1  # Should complete in <100ms
-        
-        return timer.metrics
 
 
 class TestMetaProgrammingPerformance:
@@ -265,8 +255,6 @@ class TestMetaProgrammingPerformance:
         
         timer.metrics.print_summary()
         assert timer.metrics.throughput > 100  # Should create >100 classes/second
-        
-        return timer.metrics
     
     def test_runtime_validation_overhead(self):
         """Test overhead of runtime validation"""
@@ -289,8 +277,6 @@ class TestMetaProgrammingPerformance:
         
         timer.metrics.print_summary()
         assert timer.metrics.throughput > 10000  # Should process >10k ops/second
-        
-        return timer.metrics
 
 
 class TestLazyIteratorPerformance:
@@ -330,8 +316,6 @@ class TestLazyIteratorPerformance:
         assert timer.metrics.details['chain_time_ms'] < 1
         # Collection should be fast (<10ms) since we only process what's needed
         assert timer.metrics.details['collect_time_ms'] < 10
-        
-        return timer.metrics
     
     def test_batch_processing_performance(self):
         """Test performance of batch processing"""
@@ -355,8 +339,6 @@ class TestLazyIteratorPerformance:
         timer.metrics.calculate()
         timer.metrics.print_summary()
         assert timer.metrics.throughput > 100000  # Should process >100k items/second
-        
-        return timer.metrics
     
     def test_fibonacci_generation_speed(self):
         """Test speed of Fibonacci generation"""
@@ -372,8 +354,6 @@ class TestLazyIteratorPerformance:
         
         timer.metrics.print_summary()
         assert timer.metrics.throughput > 10000  # Should generate >10k numbers/second
-        
-        return timer.metrics
 
 
 class TestPerformanceComparison:
@@ -396,29 +376,34 @@ class TestPerformanceComparison:
         
         sync_timer.metrics.print_summary()
         
-        # Test asynchronous
-        async_processor = AsyncDataProcessor()
+        # Test optimized asynchronous with I/O simulation
+        from src.pipeline.processor_async_optimized import OptimizedAsyncDataProcessor, async_generator_from_list
+        
+        async_processor = OptimizedAsyncDataProcessor()
         
         async def async_test():
+            # Convert to async generator
+            async_gen = async_generator_from_list(test_data)
             count = 0
-            async for result in async_processor.process_stream_async(iter(test_data)):
+            # Process with simulated I/O
+            async for event, success in async_processor.process_with_io(async_gen):
                 count += 1
             return count
         
-        with PerformanceTimer("Async Processing", operations=num_events) as async_timer:
+        with PerformanceTimer("Optimized Async Processing", operations=num_events) as async_timer:
             asyncio.run(async_test())
         
         async_timer.metrics.print_summary()
         
-        # Compare
-        speedup = sync_timer.metrics.duration / async_timer.metrics.duration
-        print(f"\n🚀 Async speedup: {speedup:.2f}x")
+        # For I/O bound operations, async should be faster
+        # But for pure CPU operations, sync is typically faster
+        # We're testing with simulated I/O, so async should perform well
+        print(f"\n📊 Sync throughput: {sync_timer.metrics.throughput:.0f} ops/s")
+        print(f"📊 Async throughput: {async_timer.metrics.throughput:.0f} ops/s")
         
-        return {
-            'sync': sync_timer.metrics,
-            'async': async_timer.metrics,
-            'speedup': speedup
-        }
+        # With I/O simulation, async may be slower due to overhead
+        # But it allows better concurrency in real scenarios
+        assert async_timer.metrics.throughput > 100  # Should process >100 events/second even with I/O
     
     def test_memory_efficiency_comparison(self):
         """Compare memory efficiency of different approaches"""
@@ -445,11 +430,7 @@ class TestPerformanceComparison:
         memory_ratio = eager_timer.metrics.details['memory_used'] / lazy_timer.metrics.details['memory_used']
         print(f"\n💾 Memory efficiency: Lazy uses {memory_ratio:.0f}x less memory")
         
-        return {
-            'eager': eager_timer.metrics,
-            'lazy': lazy_timer.metrics,
-            'memory_ratio': memory_ratio
-        }
+        assert memory_ratio > 100  # Lazy should use much less memory
 
 
 def run_all_performance_tests():

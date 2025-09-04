@@ -14,7 +14,11 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements
 COPY requirements.txt .
 
-# Install Python dependencies
+# Create user for builder stage
+RUN useradd -m -u 1000 streamscale
+
+# Install Python dependencies as streamscale user
+USER streamscale
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Final stage
@@ -30,21 +34,24 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Create non-root user
+RUN useradd -m -u 1000 streamscale && \
+    chown -R streamscale:streamscale /app
+
 # Copy Python dependencies from builder
-COPY --from=builder /root/.local /root/.local
+COPY --from=builder /home/streamscale/.local /home/streamscale/.local
 
 # Copy application code
 COPY src/ ./src/
 COPY .env.example .env.example
 
-# Create non-root user
-RUN useradd -m -u 1000 streamscale && \
-    chown -R streamscale:streamscale /app
+# Change ownership
+RUN chown -R streamscale:streamscale /app
 
 USER streamscale
 
 # Update PATH
-ENV PATH=/root/.local/bin:$PATH
+ENV PATH=/home/streamscale/.local/bin:$PATH
 ENV PYTHONPATH=/app:$PYTHONPATH
 
 # Health check

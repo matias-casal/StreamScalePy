@@ -71,15 +71,21 @@ class APIContractMeta(type):
             cls._required_properties = required_properties
     
     @classmethod
-    def get_redis_client(cls) -> redis.Redis:
+    def get_redis_client(cls) -> Optional[redis.Redis]:
         """Get or create Redis client / Obtiene o crea cliente Redis"""
         if cls._redis_client is None:
-            cls._redis_client = redis.Redis(
-                host=settings.redis.host,
-                port=settings.redis.port,
-                db=settings.redis.db,
-                decode_responses=True
-            )
+            try:
+                cls._redis_client = redis.Redis(
+                    host=settings.redis.host,
+                    port=settings.redis.port,
+                    db=settings.redis.db,
+                    decode_responses=True
+                )
+                # Test connection
+                cls._redis_client.ping()
+            except (redis.ConnectionError, redis.TimeoutError) as e:
+                logger.warning(f"Could not connect to Redis: {str(e)}")
+                cls._redis_client = None
         return cls._redis_client
     
     def __new__(mcs, name: str, bases: Tuple[Type, ...], namespace: Dict[str, Any]):
@@ -183,8 +189,11 @@ class APIContractMeta(type):
         Add runtime validation to methods.
         Agrega validación en tiempo de ejecución a los métodos.
         """
+        # Methods that should not have validation decorators
+        skip_validation = {'serialize', 'deserialize'}
+        
         for name, value in namespace.items():
-            if name in mcs._required_methods and callable(value):
+            if name in mcs._required_methods and callable(value) and name not in skip_validation:
                 namespace[name] = mcs._validate_method(value)
         return namespace
     
@@ -222,7 +231,15 @@ class APIContractMeta(type):
         Add default serialization methods if not present.
         Agrega métodos de serialización por defecto si no están presentes.
         """
-        if 'serialize' not in namespace:
+        # Don't add if already inherited from base class
+        has_serialize = 'serialize' in namespace or any(
+            hasattr(base, 'serialize') for base in namespace.get('__bases__', [])
+        )
+        has_deserialize = 'deserialize' in namespace or any(
+            hasattr(base, 'deserialize') for base in namespace.get('__bases__', [])
+        )
+        
+        if not has_serialize:
             def serialize(self) -> Dict[str, Any]:
                 """Default serialization / Serialización por defecto"""
                 return {
@@ -233,7 +250,7 @@ class APIContractMeta(type):
                 }
             namespace['serialize'] = serialize
         
-        if 'deserialize' not in namespace:
+        if not has_deserialize:
             @classmethod
             def deserialize(cls, data: Dict[str, Any]):
                 """Default deserialization / Deserialización por defecto"""
@@ -257,48 +274,50 @@ class APIContractMeta(type):
         if '_metrics' not in namespace:
             namespace['_metrics'] = {}
         
+        # Methods that should not have metrics collection
+        skip_metrics = {'serialize', 'deserialize'}
+        
+        # Helper function to create metrics wrapper with proper closure
+        def create_metrics_wrapper(method):
+            @wraps(method)
+            def metrics_wrapper(self, *args, **kwargs):
+                import time
+                start_time = time.time()
+                
+                try:
+                    result = method(self, *args, **kwargs)
+                    
+                    # Record success metric
+                    if not hasattr(self, '_metrics'):
+                        self._metrics = {}
+                    
+                    method_name = method.__name__
+                    if method_name not in self._metrics:
+                        self._metrics[method_name] = {
+                            'calls': 0,
+                            'errors': 0,
+                            'total_time': 0.0,
+                            'last_call': None
+                        }
+                    
+                    self._metrics[method_name]['calls'] += 1
+                    self._metrics[method_name]['total_time'] += time.time() - start_time
+                    self._metrics[method_name]['last_call'] = datetime.utcnow().isoformat()
+                    
+                    return result
+                    
+                except Exception as e:
+                    # Record error metric
+                    method_name = method.__name__
+                    if hasattr(self, '_metrics') and method_name in self._metrics:
+                        self._metrics[method_name]['errors'] += 1
+                    raise
+            return metrics_wrapper
+        
         # Wrap methods to collect metrics
         for name, value in list(namespace.items()):
-            if name in mcs._required_methods and callable(value):
-                original_method = namespace[name]
-                
-                @wraps(original_method)
-                def metrics_wrapper(self, *args, **kwargs):
-                    import time
-                    start_time = time.time()
-                    
-                    try:
-                        result = original_method(self, *args, **kwargs)
-                        
-                        # Record success metric
-                        if not hasattr(self, '_metrics'):
-                            self._metrics = {}
-                        
-                        method_name = original_method.__name__
-                        if method_name not in self._metrics:
-                            self._metrics[method_name] = {
-                                'calls': 0,
-                                'errors': 0,
-                                'total_time': 0.0,
-                                'last_call': None
-                            }
-                        
-                        self._metrics[method_name]['calls'] += 1
-                        self._metrics[method_name]['total_time'] += time.time() - start_time
-                        self._metrics[method_name]['last_call'] = datetime.utcnow().isoformat()
-                        
-                        return result
-                        
-                    except Exception as e:
-                        # Record error metric
-                        method_name = original_method.__name__
-                        if hasattr(self, '_metrics') and method_name in self._metrics:
-                            self._metrics[method_name]['errors'] += 1
-                        raise
-                
-                # Preserve the original method name
-                metrics_wrapper.__name__ = original_method.__name__
-                namespace[name] = metrics_wrapper
+            if name in mcs._required_methods and callable(value) and name not in skip_metrics:
+                namespace[name] = create_metrics_wrapper(value)
         
         return namespace
     
@@ -313,32 +332,32 @@ class APIContractMeta(type):
         # Register in memory
         mcs._registry[class_id] = cls
         
-        # Register in Redis for persistence
+        # Register in Redis for persistence if available
         try:
             redis_client = mcs.get_redis_client()
-            
-            # Prepare class metadata
-            metadata = {
-                'class_name': cls.__name__,
-                'module': cls.__module__,
-                'version': getattr(cls, 'version', '1.0.0'),
-                'description': getattr(cls, 'description', ''),
-                'author': getattr(cls, 'author', ''),
-                'registered_at': datetime.utcnow().isoformat(),
-                'methods': list(mcs._required_methods),
-                'attributes': list(mcs._required_attributes),
-                'properties': list(mcs._required_properties)
-            }
-            
-            # Store in Redis
-            redis_client.hset(
-                mcs._registry_key,
-                class_id,
-                json.dumps(metadata)
-            )
-            
-            # Set expiry for the registry (7 days)
-            redis_client.expire(mcs._registry_key, 604800)
+            if redis_client:
+                # Prepare class metadata
+                metadata = {
+                    'class_name': cls.__name__,
+                    'module': cls.__module__,
+                    'version': getattr(cls, 'version', '1.0.0'),
+                    'description': getattr(cls, 'description', ''),
+                    'author': getattr(cls, 'author', ''),
+                    'registered_at': datetime.utcnow().isoformat(),
+                    'methods': list(mcs._required_methods),
+                    'attributes': list(mcs._required_attributes),
+                    'properties': list(mcs._required_properties)
+                }
+                
+                # Store in Redis
+                redis_client.hset(
+                    mcs._registry_key,
+                    class_id,
+                    json.dumps(metadata)
+                )
+                
+                # Set expiry for the registry (7 days)
+                redis_client.expire(mcs._registry_key, 604800)
             
             logger.info(f"Class '{cls.__name__}' registered with ID: {class_id}")
             
@@ -378,13 +397,16 @@ class APIContractMeta(type):
         """
         try:
             redis_client = mcs.get_redis_client()
-            registry = redis_client.hgetall(mcs._registry_key)
-            return {
-                class_id: json.loads(metadata)
-                for class_id, metadata in registry.items()
-            }
+            if redis_client:
+                registry = redis_client.hgetall(mcs._registry_key)
+                return {
+                    class_id: json.loads(metadata)
+                    for class_id, metadata in registry.items()
+                }
+            else:
+                return {}
         except Exception as e:
-            logger.error(f"Failed to get registry from Redis: {str(e)}")
+            logger.warning(f"Could not get registry from Redis: {str(e)}")
             return {}
 
 

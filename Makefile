@@ -48,19 +48,8 @@ clean: ## Clean up containers, volumes, and networks
 test: ## Run tests
 	$(PYTHON) -m pytest src/tests/ -v --cov=src --cov-report=term-missing
 
-test-integration: ## Run integration tests
-	$(PYTHON) -m pytest src/tests/integration/ -v
-
-test-unit: ## Run unit tests
-	$(PYTHON) -m pytest src/tests/unit/ -v
-
-lint: ## Run linting
-	$(PYTHON) -m flake8 src/
-	$(PYTHON) -m mypy src/
-
-format: ## Format code
-	$(PYTHON) -m black src/
-	$(PYTHON) -m isort src/
+test-docker: ## Run tests in Docker container
+	docker exec streamscale_api pytest src/tests/ -v
 
 shell-api: ## Open shell in API container
 	docker exec -it streamscale_api /bin/bash
@@ -78,17 +67,6 @@ rabbitmq-ui: ## Open RabbitMQ Management UI
 scale-workers: ## Scale worker service (usage: make scale-workers n=4)
 	$(DOCKER_COMPOSE) up -d --scale worker=$(n)
 
-monitor: ## Start monitoring stack (Prometheus + Grafana)
-	$(DOCKER_COMPOSE) --profile monitoring up -d
-
-tools: ## Start development tools (PgAdmin)
-	$(DOCKER_COMPOSE) --profile tools up -d
-
-migrate: ## Run database migrations
-	docker exec streamscale_api alembic upgrade head
 
 backup-db: ## Backup PostgreSQL database
 	docker exec streamscale_postgres pg_dump -U streamscale_user streamscale > backup_$(shell date +%Y%m%d_%H%M%S).sql
-
-restore-db: ## Restore PostgreSQL database (usage: make restore-db file=backup.sql)
-	docker exec -i streamscale_postgres psql -U streamscale_user streamscale < $(file)
