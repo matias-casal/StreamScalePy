@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, status
 from fastapi.responses import JSONResponse
 from typing import Dict, Any, List, Optional
 import asyncio
+import signal
 import json
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -23,6 +24,7 @@ logger = get_logger(__name__)
 processor: Optional[AsyncDataProcessor] = None
 storage: Optional[DataStorage] = None
 queue_manager: Optional[QueueManager] = None
+shutdown_event = asyncio.Event()
 
 
 @asynccontextmanager
@@ -52,9 +54,18 @@ async def lifespan(app: FastAPI):
     yield
     
     # Cleanup
-    logger.info("Shutting down pipeline API")
-    await storage.close()
-    await queue_manager.close()
+    logger.info("Shutting down pipeline API gracefully...")
+    
+    # Wait for pending requests to complete
+    await asyncio.sleep(2)
+    
+    # Close connections
+    if storage:
+        await storage.close()
+    if queue_manager:
+        await queue_manager.close()
+    
+    logger.info("Pipeline API shutdown complete")
 
 
 # Create FastAPI app

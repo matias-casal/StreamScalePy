@@ -5,6 +5,7 @@ Implementación de worker para ejecución distribuida de tareas.
 import os
 import time
 import threading
+import queue
 import multiprocessing as mp
 from multiprocessing import Process, Queue, Event
 from typing import Optional, Dict, Any, List
@@ -127,9 +128,12 @@ class Worker:
                 # Put result in queue
                 result_queue.put(result)
                 
+            except queue.Empty:
+                # Normal timeout, no tasks available
+                continue
             except Exception as e:
                 if not shutdown_event.is_set():
-                    logger.error(f"Worker {self.worker_id} error: {str(e)}")
+                    logger.error(f"Worker {self.worker_id} error: {str(e)}", exc_info=True)
         
         logger.info(f"Worker {self.worker_id} loop stopped")
     

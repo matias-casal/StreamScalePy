@@ -253,27 +253,33 @@ class QueueManager:
         try:
             stats = {}
             
-            # Get events queue info
-            events_queue = await self.channel.get_queue("events.processing")
-            events_info = await events_queue.declare(passive=True)
+            # Get events queue info - declare queue passively (won't create if doesn't exist)
+            events_queue = await self.channel.declare_queue(
+                "events.processing", 
+                passive=True
+            )
             stats["events_queue"] = {
-                "message_count": events_info.message_count,
-                "consumer_count": events_info.consumer_count
+                "message_count": events_queue.declaration_result.message_count,
+                "consumer_count": events_queue.declaration_result.consumer_count
             }
             
             # Get aggregations queue info
-            agg_queue = await self.channel.get_queue("aggregations.processing")
-            agg_info = await agg_queue.declare(passive=True)
+            agg_queue = await self.channel.declare_queue(
+                "aggregations.processing",
+                passive=True
+            )
             stats["aggregations_queue"] = {
-                "message_count": agg_info.message_count,
-                "consumer_count": agg_info.consumer_count
+                "message_count": agg_queue.declaration_result.message_count,
+                "consumer_count": agg_queue.declaration_result.consumer_count
             }
             
             # Get DLQ info
-            dlq = await self.channel.get_queue("dead_letter_queue")
-            dlq_info = await dlq.declare(passive=True)
+            dlq = await self.channel.declare_queue(
+                "dead_letter_queue",
+                passive=True
+            )
             stats["dead_letter_queue"] = {
-                "message_count": dlq_info.message_count
+                "message_count": dlq.declaration_result.message_count
             }
             
             return stats

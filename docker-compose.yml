@@ -117,8 +117,15 @@ services:
         condition: service_healthy
     volumes:
       - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
       - ./logs:/app/logs
     command: python -m src.scheduler.main
+    healthcheck:
+      test: ["CMD", "python", "/app/scripts/healthcheck_scheduler.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - streamscale_network
     restart: unless-stopped
@@ -143,8 +150,15 @@ services:
         condition: service_healthy
     volumes:
       - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
       - ./logs:/app/logs
     command: python -m src.scheduler.worker_service
+    healthcheck:
+      test: ["CMD", "python", "/app/scripts/healthcheck_worker.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - streamscale_network
     restart: unless-stopped
