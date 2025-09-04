@@ -4,10 +4,9 @@ Modelos de datos para el pipeline.
 """
 from datetime import datetime
 from typing import Dict, Any, Optional, List
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 Base = declarative_base()
 
@@ -24,15 +23,16 @@ class DataEvent(BaseModel):
     data: Dict[str, Any] = Field(default_factory=dict, description="Event payload")
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="Event metadata")
     
-    @validator('data')
+    @field_validator('data')
+    @classmethod
     def validate_data_not_empty(cls, v):
         """Ensure data is not empty / Asegura que los datos no estén vacíos"""
         if not v:
             raise ValueError("Event data cannot be empty")
         return v
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "event_id": "evt_123456",
                 "source": "sensor_001",
@@ -44,6 +44,7 @@ class DataEvent(BaseModel):
                 }
             }
         }
+    )
 
 
 class AggregatedData(BaseModel):

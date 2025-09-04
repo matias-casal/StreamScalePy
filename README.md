@@ -350,26 +350,17 @@ docker exec -it streamscale_api python3 test_scheduler.py
 
 ## 📊 Performance Testing
 
-### Run Complete Performance Suite
+### Run Performance Tests
 ```bash
-# Run all performance tests
-python3 run_performance_tests.py
-
-# Run memory efficiency test
-python3 performance_test_simple.py
-
-# Run optimized pipeline test
-python3 performance_comparison.py
-
-# Run extreme optimization test
-python3 extreme_performance_test.py
+# Test with batch processing
+python3 -c "import httpx; events=[{'event_id':f'test_{i}','source':f'sensor_{i%10}','event_type':'test','data':{'value':i}} for i in range(1000)]; print(httpx.post('http://localhost:8000/webhook/batch',json=events,timeout=30).json())"
 ```
 
 ### Expected Performance Metrics
-- **Pipeline Processing**: ~100,000 events/second
-- **Memory Usage**: Constant ~50MB regardless of input size
-- **Task Scheduling**: ~10,000 tasks/second
-- **Lazy Iterator**: Processes 1M+ items with <10MB memory
+- **Pipeline Processing**: ~8,000-10,000 events/second
+- **Memory Usage**: ~100MB for API container
+- **Task Scheduling**: Distributed across 4 workers
+- **Lazy Iterator**: Processes large datasets with constant memory
 
 ## 🔧 Configuration
 
@@ -410,16 +401,8 @@ SCHEDULER_TASK_TIMEOUT=300
 # Install dependencies
 pip install -r requirements.txt
 
-# Run tests locally
-pytest src/tests/ -v --cov=src
-
-# Format code
-black src/
-isort src/
-
-# Lint code
-flake8 src/
-mypy src/
+# Run tests in container
+docker exec streamscale_api pytest src/tests/ -v
 ```
 
 ### Useful Commands
@@ -437,13 +420,8 @@ make shell-redis    # Redis CLI
 # Scale workers
 make scale-workers n=8
 
-# Database operations
-make backup-db      # Backup database
-make restore-db file=backup.sql  # Restore
-
-# Monitoring
-make monitor        # Start Prometheus + Grafana
-make tools          # Start PgAdmin
+# Database operations  
+docker exec streamscale_postgres pg_dump -U streamscale_user streamscale > backup.sql
 ```
 
 ## 🐛 Troubleshooting
@@ -511,12 +489,9 @@ docker exec streamscale_postgres psql -U streamscale_user -c "\dt"
 
 ## 📈 Monitoring
 
-### Access Monitoring Tools
+### Access Available Tools
 - **API Documentation**: http://localhost:8000/docs
 - **RabbitMQ Management**: http://localhost:15672 (guest/guest)
-- **PgAdmin**: http://localhost:8080 (admin@streamscale.com/admin)
-- **Prometheus**: http://localhost:9090
-- **Grafana**: http://localhost:3000 (admin/admin)
 
 ### Key Metrics to Monitor
 1. **Pipeline Performance**
@@ -572,63 +547,15 @@ docker exec streamscale_postgres psql -U streamscale_user -c "\dt"
                     └───────────────────┘
 ```
 
-## 🚀 Production Deployment
+## 🚀 Production Considerations
 
-### Docker Swarm Deployment
-```bash
-# Initialize swarm
-docker swarm init
-
-# Deploy stack
-docker stack deploy -c docker-compose.yml streamscale
-
-# Scale services
-docker service scale streamscale_worker=10
-```
-
-### Kubernetes Deployment
-```yaml
-# k8s/deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: streamscale-api
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: streamscale-api
-  template:
-    metadata:
-      labels:
-        app: streamscale-api
-    spec:
-      containers:
-      - name: api
-        image: streamscale:latest
-        ports:
-        - containerPort: 8000
-        env:
-        - name: POSTGRES_HOST
-          value: postgres-service
-```
-
-### Performance Tuning
-```bash
-# Optimize PostgreSQL
-docker exec streamscale_postgres psql -U streamscale_user -c "
-  ALTER SYSTEM SET shared_buffers = '256MB';
-  ALTER SYSTEM SET effective_cache_size = '1GB';
-  ALTER SYSTEM SET maintenance_work_mem = '64MB';
-"
-
-# Optimize Redis
-docker exec streamscale_redis redis-cli CONFIG SET maxmemory 512mb
-docker exec streamscale_redis redis-cli CONFIG SET maxmemory-policy allkeys-lru
-
-# Optimize RabbitMQ
-docker exec streamscale_rabbitmq rabbitmqctl set_vm_memory_high_watermark 0.6
-```
+**Note:** This system is a technical demonstration. For production deployment, you would need to:
+- Implement authentication and authorization
+- Set up proper secrets management
+- Configure SSL/TLS certificates
+- Add database migration system
+- Implement monitoring and alerting
+- Configure automated backups
 
 ## 📚 API Documentation
 

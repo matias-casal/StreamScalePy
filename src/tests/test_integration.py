@@ -17,7 +17,7 @@ from src.context_manager.resource_manager import ResourceManager, AsyncResourceM
 from src.meta_programming.api_contract import APIContractBase, APIContractMeta
 from src.iterator.lazy_collection import LazyCollection, create_fibonacci_generator
 from src.scheduler.scheduler import DistributedScheduler
-from src.scheduler.task import Task, TaskPriority
+from src.scheduler.task import Task, TaskPriority, TaskStatus
 
 
 class TestDataPipeline:
@@ -313,13 +313,16 @@ class TestLazyIterator:
         """Test pagination functionality"""
         collection = LazyCollection(range(1, 101))
         
+        # Paginate returns an iterator of LazyCollections
         pages = list(collection.paginate(10))
         
         assert len(pages) == 10
         
+        # Collect the first page
         first_page = pages[0].collect()
         assert first_page == list(range(1, 11))
         
+        # Collect the last page
         last_page = pages[-1].collect()
         assert last_page == list(range(91, 101))
 
@@ -353,21 +356,39 @@ class TestDistributedScheduler:
         )
         scheduler.initialize()
         
-        # Define test task
-        def test_task(x, y):
-            return x + y
-        
-        # Submit task
-        task_id = scheduler.submit_task(
-            test_task,
-            args=(5, 3),
-            name="test_addition"
-        )
-        
-        assert task_id is not None
-        assert task_id in scheduler.task_graph.tasks
-        
-        scheduler.shutdown()
+        try:
+            # Define test task
+            def test_task(x, y):
+                return x + y
+            
+            # Submit task
+            task_id = scheduler.submit_task(
+                test_task,
+                args=(5, 3),
+                name="test_addition"
+            )
+            
+            assert task_id is not None
+            assert task_id in scheduler.task_graph.tasks
+            
+            # Start scheduler processing
+            scheduler.run()
+            
+            # Wait for task to complete (max 5 seconds)
+            import time
+            for _ in range(50):
+                task = scheduler.task_graph.tasks.get(task_id)
+                if task and task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+                    break
+                time.sleep(0.1)
+            
+            # Verify task completed
+            task = scheduler.task_graph.tasks.get(task_id)
+            assert task is not None
+            assert task.status == TaskStatus.COMPLETED
+            
+        finally:
+            scheduler.shutdown()
     
     def test_task_dependencies(self):
         """Test task dependency handling"""

@@ -78,6 +78,10 @@ async def main():
         logger.info("Running scheduler main loop")
         scheduler.run()
         
+        # Keep scheduler running
+        while not scheduler.shutdown_event.is_set():
+            await asyncio.sleep(1)
+        
     except KeyboardInterrupt:
         logger.info("Received interrupt signal")
     except Exception as e:

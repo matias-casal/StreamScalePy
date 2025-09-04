@@ -71,9 +71,11 @@ class LazyCollection(Generic[T]):
         # Get source iterator
         if callable(self._source):
             iterator = self._source()
-        elif isinstance(self._source, list):
+        elif hasattr(self._source, '__iter__'):
+            # Handle any iterable including range, list, etc.
             iterator = iter(self._source)
         else:
+            # Assume it's already an iterator
             iterator = self._source
         
         # Apply transformations in order

@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, status
 from fastapi.responses import JSONResponse
 from typing import Dict, Any, List, Optional
 import asyncio
+import signal
 import json
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -14,6 +15,7 @@ from src.pipeline.models import DataEvent, AggregatedData
 from src.pipeline.processor import AsyncDataProcessor
 from src.pipeline.storage import DataStorage
 from src.pipeline.queue_manager import QueueManager
+from src.pipeline.rabbitmq_consumer import consumer_manager, start_default_consumers, stop_all_consumers
 from src.shared.config import settings
 from src.shared.logging import get_logger
 
@@ -23,6 +25,7 @@ logger = get_logger(__name__)
 processor: Optional[AsyncDataProcessor] = None
 storage: Optional[DataStorage] = None
 queue_manager: Optional[QueueManager] = None
+shutdown_event = asyncio.Event()
 
 
 @asynccontextmanager
@@ -47,14 +50,37 @@ async def lifespan(app: FastAPI):
     await storage.initialize()
     await queue_manager.initialize()
     
+    # Start RabbitMQ consumers in background
+    try:
+        start_default_consumers()
+        logger.info("RabbitMQ consumers started")
+    except Exception as e:
+        logger.error(f"Failed to start consumers: {str(e)}")
+    
     logger.info("Pipeline API initialized successfully")
     
     yield
     
     # Cleanup
-    logger.info("Shutting down pipeline API")
-    await storage.close()
-    await queue_manager.close()
+    logger.info("Shutting down pipeline API gracefully...")
+    
+    # Stop consumers
+    try:
+        stop_all_consumers()
+        logger.info("RabbitMQ consumers stopped")
+    except Exception as e:
+        logger.error(f"Error stopping consumers: {str(e)}")
+    
+    # Wait for pending requests to complete
+    await asyncio.sleep(2)
+    
+    # Close connections
+    if storage:
+        await storage.close()
+    if queue_manager:
+        await queue_manager.close()
+    
+    logger.info("Pipeline API shutdown complete")
 
 
 # Create FastAPI app

@@ -131,15 +131,16 @@ class DataStorage:
         async with self.get_session() as session:
             try:
                 # Check for duplicate
-                existing = await session.execute(
+                result = await session.execute(
                     select(ProcessedEventDB).where(
                         ProcessedEventDB.event_id == event.event_id
                     )
                 )
+                existing_event = result.scalar_one_or_none()
                 
-                if existing.scalar_one_or_none():
+                if existing_event:
                     logger.warning("Duplicate event", event_id=event.event_id)
-                    return existing.scalar_one()
+                    return existing_event
                 
                 # Create database record
                 db_event = ProcessedEventDB(
@@ -156,10 +157,14 @@ class DataStorage:
                 
                 # Cache in Redis with expiry
                 cache_key = f"event:{event.event_id}"
+                event_dict = event.dict()
+                # Convert datetime to string for JSON serialization
+                if 'timestamp' in event_dict and isinstance(event_dict['timestamp'], datetime):
+                    event_dict['timestamp'] = event_dict['timestamp'].isoformat()
                 await self.redis_client.setex(
                     cache_key,
                     3600,  # 1 hour TTL
-                    json.dumps(event.dict())
+                    json.dumps(event_dict)
                 )
                 
                 logger.debug("Event stored", event_id=event.event_id)
@@ -179,16 +184,17 @@ class DataStorage:
         async with self.get_session() as session:
             try:
                 # Check for duplicate
-                existing = await session.execute(
+                result = await session.execute(
                     select(AggregationDB).where(
                         AggregationDB.aggregation_id == aggregation.aggregation_id
                     )
                 )
+                existing_aggregation = result.scalar_one_or_none()
                 
-                if existing.scalar_one_or_none():
+                if existing_aggregation:
                     logger.warning("Duplicate aggregation", 
                                  aggregation_id=aggregation.aggregation_id)
-                    return existing.scalar_one()
+                    return existing_aggregation
                 
                 # Create database record
                 db_aggregation = AggregationDB(

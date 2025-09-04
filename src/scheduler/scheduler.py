@@ -91,6 +91,72 @@ class DistributedScheduler:
         self.shutdown()
         sys.exit(0)
     
+    def _connect_rabbitmq(self):
+        """
+        Connect or reconnect to RabbitMQ.
+        Conectar o reconectar a RabbitMQ.
+        """
+        try:
+            # Close existing connection if any
+            if self.rabbitmq_connection and not self.rabbitmq_connection.is_closed:
+                try:
+                    self.rabbitmq_connection.close()
+                except:
+                    pass
+            
+            connection_params = pika.ConnectionParameters(
+                host=settings.rabbitmq.host,
+                port=settings.rabbitmq.port,
+                credentials=pika.PlainCredentials(
+                    settings.rabbitmq.user,
+                    settings.rabbitmq.password
+                ),
+                virtual_host=settings.rabbitmq.vhost,
+                heartbeat=600,
+                blocked_connection_timeout=300,
+                connection_attempts=3,
+                retry_delay=2
+            )
+            self.rabbitmq_connection = pika.BlockingConnection(connection_params)
+            self.rabbitmq_channel = self.rabbitmq_connection.channel()
+            
+            # Set prefetch count to limit concurrent messages
+            self.rabbitmq_channel.basic_qos(prefetch_count=1)
+            
+            # Declare task queue
+            self.rabbitmq_channel.queue_declare(
+                queue='task_queue',
+                durable=True
+            )
+            
+            # Declare result queue
+            self.rabbitmq_channel.queue_declare(
+                queue='result_queue',
+                durable=True
+            )
+            
+            logger.info("RabbitMQ connection established")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to connect to RabbitMQ: {str(e)}")
+            self.rabbitmq_connection = None
+            self.rabbitmq_channel = None
+            return False
+    
+    def _ensure_rabbitmq_connection(self):
+        """
+        Ensure RabbitMQ connection is active.
+        Asegura que la conexión RabbitMQ esté activa.
+        """
+        if not self.use_rabbitmq:
+            return False
+        
+        if self.rabbitmq_channel is None or self.rabbitmq_channel.is_closed:
+            logger.info("RabbitMQ connection lost, attempting to reconnect...")
+            return self._connect_rabbitmq()
+        
+        return True
+    
     def initialize(self):
         """
         Initialize scheduler components.
@@ -115,38 +181,18 @@ class DistributedScheduler:
         
         # Initialize RabbitMQ
         if self.use_rabbitmq:
-            try:
-                connection_params = pika.ConnectionParameters(
-                    host=settings.rabbitmq.host,
-                    port=settings.rabbitmq.port,
-                    credentials=pika.PlainCredentials(
-                        settings.rabbitmq.user,
-                        settings.rabbitmq.password
-                    ),
-                    virtual_host=settings.rabbitmq.vhost
-                )
-                self.rabbitmq_connection = pika.BlockingConnection(connection_params)
-                self.rabbitmq_channel = self.rabbitmq_connection.channel()
-                
-                # Declare task queue
-                self.rabbitmq_channel.queue_declare(
-                    queue='task_queue',
-                    durable=True
-                )
-                
-                # Declare result queue
-                self.rabbitmq_channel.queue_declare(
-                    queue='result_queue',
-                    durable=True
-                )
-                
-                logger.info("RabbitMQ connection established")
-            except Exception as e:
-                logger.error(f"Failed to connect to RabbitMQ: {str(e)}")
-                self.use_rabbitmq = False
+            self._connect_rabbitmq()
         
         # Initialize worker pool
         self.worker_pool.start()
+        
+        # Start processing thread
+        self.processing_thread = threading.Thread(
+            target=self._processing_loop,
+            daemon=True
+        )
+        self.processing_thread.start()
+        logger.info("Processing thread started")
         
         # Start monitoring thread
         if self.enable_monitoring:
@@ -226,7 +272,7 @@ class DistributedScheduler:
             self._queue_local(task)
         
         # Publish to RabbitMQ if available
-        if self.use_rabbitmq and self.rabbitmq_channel:
+        if self.use_rabbitmq and self._ensure_rabbitmq_connection():
             try:
                 self.rabbitmq_channel.basic_publish(
                     exchange='',
@@ -238,8 +284,9 @@ class DistributedScheduler:
                     )
                 )
                 logger.debug(f"Task {task.task_id} published to RabbitMQ")
-            except Exception as e:
+            except (pika.exceptions.AMQPError, pika.exceptions.AMQPConnectionError) as e:
                 logger.error(f"Failed to publish task to RabbitMQ: {str(e)}")
+                self.rabbitmq_channel = None  # Force reconnection on next attempt
     
     def _queue_local(self, task: Task):
         """
@@ -465,7 +512,7 @@ class DistributedScheduler:
                 logger.error(f"Failed to store result in Redis: {str(e)}")
         
         # Publish to RabbitMQ
-        if self.use_rabbitmq and self.rabbitmq_channel:
+        if self.use_rabbitmq and self._ensure_rabbitmq_connection():
             try:
                 self.rabbitmq_channel.basic_publish(
                     exchange='',
@@ -475,15 +522,24 @@ class DistributedScheduler:
                         delivery_mode=2  # Persistent
                     )
                 )
-            except Exception as e:
+            except (pika.exceptions.AMQPError, pika.exceptions.AMQPConnectionError) as e:
                 logger.error(f"Failed to publish result to RabbitMQ: {str(e)}")
+                self.rabbitmq_channel = None  # Force reconnection on next attempt
     
     def run(self):
         """
-        Main scheduler loop.
-        Bucle principal del planificador.
+        Start the scheduler (non-blocking).
+        Inicia el planificador (no bloqueante).
         """
-        logger.info("Starting scheduler main loop")
+        logger.info("Scheduler started in background")
+        # The actual processing happens in _processing_loop thread
+        
+    def _processing_loop(self):
+        """
+        Main scheduler processing loop.
+        Bucle principal de procesamiento del planificador.
+        """
+        logger.info("Starting scheduler processing loop")
         
         while not self.shutdown_event.is_set():
             try:
@@ -495,11 +551,12 @@ class DistributedScheduler:
                     worker = self.worker_pool.get_available_worker()
                     
                     if worker:
-                        # Execute task
-                        result = self._execute_task(task, worker.worker_id)
-                        
-                        # Return worker to pool
-                        self.worker_pool.return_worker(worker)
+                        # Execute task in a separate thread to avoid blocking
+                        thread = threading.Thread(
+                            target=self._execute_task_async,
+                            args=(task, worker.worker_id)
+                        )
+                        thread.start()
                     else:
                         # No workers available, re-queue
                         self._queue_task(task)
@@ -511,10 +568,24 @@ class DistributedScheduler:
             except KeyboardInterrupt:
                 break
             except Exception as e:
-                logger.error(f"Error in scheduler loop: {str(e)}")
+                logger.error(f"Error in processing loop: {str(e)}")
                 time.sleep(1)
         
-        logger.info("Scheduler main loop stopped")
+        logger.info("Scheduler processing loop stopped")
+    
+    def _execute_task_async(self, task: Task, worker_id: str):
+        """
+        Execute task asynchronously and return worker to pool.
+        Ejecuta tarea de forma asíncrona y devuelve worker al pool.
+        """
+        try:
+            result = self._execute_task(task, worker_id)
+        finally:
+            # Find and return worker to pool
+            for worker in self.worker_pool.workers:
+                if worker.worker_id == worker_id:
+                    self.worker_pool.return_worker(worker)
+                    break
     
     def _monitoring_loop(self):
         """
@@ -612,9 +683,19 @@ class DistributedScheduler:
         Obtiene estadísticas del planificador.
         """
         runtime = (datetime.utcnow() - self.stats['start_time']).total_seconds()
+        graph_stats = self.task_graph.get_statistics()
+        
+        # Calculate pending, running, and completed tasks from graph stats
+        pending_tasks = graph_stats.get('status_counts', {}).get('pending', 0)
+        pending_tasks += graph_stats.get('status_counts', {}).get('queued', 0)
+        running_tasks = graph_stats.get('status_counts', {}).get('running', 0)
+        completed_tasks = self.stats['tasks_completed']
         
         return {
             **self.stats,
+            'pending_tasks': pending_tasks,
+            'running_tasks': running_tasks,
+            'completed_tasks': completed_tasks,
             'runtime_seconds': runtime,
             'tasks_per_second': self.stats['tasks_completed'] / runtime if runtime > 0 else 0,
             'average_execution_time': (
@@ -622,7 +703,7 @@ class DistributedScheduler:
                 if self.stats['tasks_completed'] > 0 else 0
             ),
             'worker_stats': self.worker_pool.get_statistics(),
-            'graph_stats': self.task_graph.get_statistics(),
+            'graph_stats': graph_stats,
             'queue_size': self.local_queue.qsize() if hasattr(self.local_queue, 'qsize') else 0
         }
     
@@ -654,17 +735,43 @@ class DistributedScheduler:
         """
         logger.info("Shutting down scheduler...")
         
-        # Set shutdown event
+        # Set shutdown event first
         self.shutdown_event.set()
         
-        # Stop worker pool
+        # Wait for processing thread to stop if it exists
+        if hasattr(self, 'processing_thread') and self.processing_thread and self.processing_thread.is_alive():
+            logger.info("Waiting for processing thread to finish...")
+            self.processing_thread.join(timeout=5)
+        
+        # Stop accepting new tasks
+        logger.info("Stopping task acceptance...")
+        
+        # Wait for currently executing tasks to complete (max 10 seconds)
+        logger.info("Waiting for active tasks to complete...")
+        wait_time = 0
+        while wait_time < 10:
+            graph_stats = self.task_graph.get_statistics()
+            running = graph_stats.get('status_counts', {}).get('running', 0)
+            if running == 0:
+                break
+            time.sleep(0.5)
+            wait_time += 0.5
+        
+        # Now shutdown worker pool
+        logger.info("Shutting down worker pool...")
         self.worker_pool.shutdown()
         
         # Close external connections
         if self.redis_client:
-            self.redis_client.close()
+            try:
+                self.redis_client.close()
+            except Exception as e:
+                logger.debug(f"Error closing Redis connection: {e}")
         
         if self.rabbitmq_connection and not self.rabbitmq_connection.is_closed:
-            self.rabbitmq_connection.close()
+            try:
+                self.rabbitmq_connection.close()
+            except Exception as e:
+                logger.debug(f"Error closing RabbitMQ connection: {e}")
         
         logger.info("Scheduler shutdown complete")
